@@ -1,5 +1,5 @@
 // PDF Processing utilities for bank statements
-// Supports multiple Costa Rican bank formats including Grupo Mutual
+// Supports multiple Costa Rican bank formats including Grupo Mutual and BAC Credomatic
 
 export interface ExtractedTransaction {
   date: Date
@@ -15,6 +15,13 @@ export interface ExtractedData {
   totalCredits: number
   totalDebits: number
   netFlow: number
+}
+
+// Column positions for BAC format (detected from header)
+interface BACColumnPositions {
+  debitStart: number
+  creditStart: number
+  balanceStart: number
 }
 
 // Credit indicators in transaction descriptions
@@ -111,6 +118,161 @@ function getTransactionType(line: string): 'credit' | 'debit' | null {
   }
   
   return null
+}
+
+// Detect BAC column positions from header line
+function detectBACColumnPositions(headerLine: string): BACColumnPositions | null {
+  const upperLine = headerLine.toUpperCase()
+  
+  // Look for the header pattern: Fecha ... Debito ... Créditos ... Balance
+  const debitMatch = upperLine.match(/DEBITO/i)
+  const creditMatch = upperLine.match(/CR[EÉ]DITO/i)
+  const balanceMatch = upperLine.match(/BALANCE/i)
+  
+  if (!debitMatch || !creditMatch || !balanceMatch) {
+    return null
+  }
+  
+  return {
+    debitStart: debitMatch.index || 55,
+    creditStart: creditMatch.index || 80,
+    balanceStart: balanceMatch.index || 100,
+  }
+}
+
+// Extract transactions from BAC Credomatic format
+// BAC format: Fecha | Referencia | Código | Descripción | Débito | Créditos | Balance
+// Débito column = GASTOS/EGRESOS (money going out)
+// Créditos column = INGRESOS (money coming in)
+function extractFromBACFormat(lines: string[]): ExtractedData {
+  const credits: ExtractedTransaction[] = []
+  const debits: ExtractedTransaction[] = []
+  
+  // Find header line to detect column positions
+  let columnPositions: BACColumnPositions | null = null
+  
+  for (const line of lines) {
+    const positions = detectBACColumnPositions(line)
+    if (positions) {
+      columnPositions = positions
+      console.log('BAC column positions detected:', columnPositions)
+      break
+    }
+  }
+  
+  // Default positions if header not found
+  if (!columnPositions) {
+    columnPositions = { debitStart: 55, creditStart: 80, balanceStart: 100 }
+    console.log('Using default BAC column positions:', columnPositions)
+  }
+  
+  const { debitStart, creditStart, balanceStart } = columnPositions
+  
+  for (const line of lines) {
+    if (!line.trim()) continue
+    
+    // Look for lines starting with date pattern DD/MM/YYYY
+    const dateMatch = line.match(/^\s*(\d{2}\/\d{2}\/\d{4})/)
+    if (!dateMatch) continue
+    
+    const date = parseDate(dateMatch[1])
+    if (!date) continue
+    
+    // Find all amounts with their positions
+    const amountPattern = /(\d{1,3}(?:,\d{3})*\.\d{2})/g
+    const amountsWithPositions: { amount: number; position: number }[] = []
+    let match
+    
+    while ((match = amountPattern.exec(line)) !== null) {
+      const amount = cleanAmount(match[1])
+      amountsWithPositions.push({ amount, position: match.index })
+    }
+    
+    if (amountsWithPositions.length < 2) continue
+    
+    // BAC format has 3 amounts per line: Débito, Créditos, Balance
+    // We need to identify which is which based on position
+    
+    // Find amounts in each column range
+    const debitColumnRange = { start: debitStart - 10, end: creditStart - 5 }
+    const creditColumnRange = { start: creditStart - 10, end: balanceStart - 5 }
+    
+    const debitAmounts = amountsWithPositions.filter(
+      a => a.position >= debitColumnRange.start && a.position < debitColumnRange.end
+    )
+    const creditAmounts = amountsWithPositions.filter(
+      a => a.position >= creditColumnRange.start && a.position < creditColumnRange.end
+    )
+    
+    // Determine transaction type and amount
+    let type: 'credit' | 'debit' | null = null
+    let transactionAmount = 0
+    
+    // In BAC format:
+    // - If there's a non-zero amount in Débito column and 0.00 in Créditos -> DEBIT (expense)
+    // - If there's 0.00 in Débito column and non-zero in Créditos -> CREDIT (income)
+    
+    const hasNonZeroDebit = debitAmounts.some(a => a.amount > 0)
+    const hasNonZeroCredit = creditAmounts.some(a => a.amount > 0)
+    
+    if (hasNonZeroDebit && !hasNonZeroCredit) {
+      // This is a DEBIT transaction (expense/gasto)
+      type = 'debit'
+      transactionAmount = debitAmounts.find(a => a.amount > 0)?.amount || 0
+    } else if (!hasNonZeroDebit && hasNonZeroCredit) {
+      // This is a CREDIT transaction (income/ingreso)
+      type = 'credit'
+      transactionAmount = creditAmounts.find(a => a.amount > 0)?.amount || 0
+    } else if (hasNonZeroDebit && hasNonZeroCredit) {
+      // Both have amounts - unusual, default to debit
+      type = 'debit'
+      transactionAmount = debitAmounts.find(a => a.amount > 0)?.amount || 0
+    }
+    
+    if (!type || transactionAmount <= 0) continue
+    
+    // Extract description (between date and amounts)
+    let description = line
+      .replace(/^\s*\d{2}\/\d{2}\/\d{4}\s+/, '')
+      .replace(/\d{3,}\s+/g, ' ')
+      .replace(/\d{1,3}(?:,\d{3})*\.\d{2}/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .substring(0, 200)
+    
+    const month = getMonthString(date)
+    
+    const transaction: ExtractedTransaction = {
+      date,
+      amount: transactionAmount,
+      description: description || (type === 'credit' ? 'Transferencia recibida' : 'Pago realizado'),
+      month,
+      type,
+    }
+    
+    if (type === 'credit') {
+      credits.push(transaction)
+      console.log('BAC Credit:', { date: date.toISOString().split('T')[0], amount: transactionAmount, description: description.substring(0, 40) })
+    } else {
+      debits.push(transaction)
+      console.log('BAC Debit:', { date: date.toISOString().split('T')[0], amount: transactionAmount, description: description.substring(0, 40) })
+    }
+  }
+  
+  // Sort by date
+  credits.sort((a, b) => a.date.getTime() - b.date.getTime())
+  debits.sort((a, b) => a.date.getTime() - b.date.getTime())
+  
+  const totalCredits = credits.reduce((sum, t) => sum + t.amount, 0)
+  const totalDebits = debits.reduce((sum, t) => sum + t.amount, 0)
+  
+  return {
+    credits,
+    debits,
+    totalCredits,
+    totalDebits,
+    netFlow: totalCredits - totalDebits,
+  }
 }
 
 // Extract transactions from Grupo Mutual layout format
@@ -460,8 +622,19 @@ export function extractAllTransactions(text: string): ExtractedData {
     /\s{3,}/.test(line) && /\d{2}\/\d{2}\/\d{4}/.test(line) && line.length > 100
   )
   
+  // Check for BAC format - has "Debito" and "Créditos" headers with "Balance"
+  const isBACFormat = lines.some(line => {
+    const upper = line.toUpperCase()
+    return (upper.includes('DEBITO') || upper.includes('DÉBITO')) && 
+           (upper.includes('CRÉDITO') || upper.includes('CREDITO')) && 
+           upper.includes('BALANCE')
+  })
+  
   // Detect bank format
-  if (upperText.includes('GRUPO MUTUAL') || upperText.includes('MUTUAL ALAJUELA')) {
+  if (isBACFormat || upperText.includes('BAC CREDOMATIC') || upperText.includes('BAC')) {
+    console.log('Detected BAC Credomatic format')
+    result = extractFromBACFormat(lines)
+  } else if (upperText.includes('GRUPO MUTUAL') || upperText.includes('MUTUAL ALAJUELA')) {
     console.log('Detected Grupo Mutual format')
     
     if (hasOCRLines && !hasColumnLayout) {
