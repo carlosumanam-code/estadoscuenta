@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Loader2, Lock, Mail, LogOut, LayoutDashboard, Users, Building2, Landmark, FileUp, ChevronLeft, ChevronRight, DollarSign, Download } from 'lucide-react'
+import { Loader2, Lock, Mail, LogOut, Users, Building2, Landmark, FileUp, ChevronLeft, ChevronRight, Download } from 'lucide-react'
 import { BanksManager } from '@/components/banks-manager'
 
 export default function Home() {
@@ -14,7 +14,7 @@ export default function Home() {
   const [loginForm, setLoginForm] = useState({ email: '', password: '' })
   const [loginError, setLoginError] = useState('')
   const [loginLoading, setLoginLoading] = useState(false)
-  const [currentView, setCurrentView] = useState('dashboard')
+  const [currentView, setCurrentView] = useState('upload')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -133,7 +133,6 @@ export default function Home() {
 
   // Main app with sidebar
   const menuItems = [
-    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'upload', label: 'Procesar PDF', icon: FileUp },
     { id: 'banks', label: 'Bancos', icon: Landmark },
     ...(user.role === 'admin' ? [
@@ -205,103 +204,12 @@ export default function Home() {
       {/* Main Content */}
       <main className="flex-1 p-6 overflow-auto">
         <div className="max-w-7xl mx-auto">
-          {currentView === 'dashboard' && <DashboardView onProcess={() => setCurrentView('upload')} />}
           {currentView === 'upload' && <PDFUploadSection />}
           {currentView === 'users' && <UsersSection />}
           {currentView === 'organizations' && <OrganizationsSection />}
           {currentView === 'banks' && <BanksManager userRole={user.role} />}
         </div>
       </main>
-    </div>
-  )
-}
-
-// Dashboard View
-function DashboardView({ onProcess }: { onProcess: () => void }) {
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold text-slate-800">Dashboard</h2>
-      </div>
-      
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card className="bg-gradient-to-br from-green-50 to-emerald-50 border-0">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-green-100 rounded-lg">
-                <DollarSign className="w-5 h-5 text-green-600" />
-              </div>
-              <div>
-                <p className="text-sm text-slate-600">Total Ingresos</p>
-                <p className="text-xl font-bold text-green-600">₡0.00</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        
-        <Card className="bg-gradient-to-br from-blue-50 to-sky-50 border-0">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-blue-100 rounded-lg">
-                <DollarSign className="w-5 h-5 text-blue-600" />
-              </div>
-              <div>
-                <p className="text-sm text-slate-600">Promedio Mensual</p>
-                <p className="text-xl font-bold text-blue-600">₡0.00</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        
-        <Card className="bg-gradient-to-br from-teal-50 to-cyan-50 border-0">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-teal-100 rounded-lg">
-                <DollarSign className="w-5 h-5 text-teal-600" />
-              </div>
-              <div>
-                <p className="text-sm text-slate-600">Transacciones</p>
-                <p className="text-xl font-bold text-teal-600">0</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        
-        <Card className="bg-gradient-to-br from-purple-50 to-violet-50 border-0">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-purple-100 rounded-lg">
-                <DollarSign className="w-5 h-5 text-purple-600" />
-              </div>
-              <div>
-                <p className="text-sm text-slate-600">Índice Estabilidad</p>
-                <p className="text-xl font-bold text-purple-600">--</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-      
-      {/* Empty State */}
-      <Card>
-        <CardContent className="p-12">
-          <div className="text-center text-slate-500">
-            <div className="w-20 h-20 mx-auto mb-4 bg-slate-100 rounded-full flex items-center justify-center">
-              <FileUp className="w-10 h-10 text-slate-300" />
-            </div>
-            <h3 className="text-lg font-semibold text-slate-700 mb-2">Sin datos para mostrar</h3>
-            <p className="text-sm mb-4">Procese un estado de cuenta bancario en formato PDF para ver los ingresos detectados y las estadísticas.</p>
-            <Button 
-              className="bg-teal-500 hover:bg-teal-600"
-              onClick={onProcess}
-            >
-              <FileUp className="w-4 h-4 mr-2" />
-              Procesar Estado de Cuenta
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
     </div>
   )
 }

@@ -1,6 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -11,53 +8,53 @@ datasource db {
 }
 
 model Organization {
-  id              String   @id @default(cuid())
-  name            String   @unique
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  users           User[]
-  bankStatements  BankStatement[]
+  id             String          @id @default(cuid())
+  name           String          @unique
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  bankStatements BankStatement[]
+  users          User[]
 }
 
 model User {
-  id             String   @id @default(cuid())
-  email          String   @unique
+  id             String       @id @default(cuid())
+  email          String       @unique
   password       String
   name           String
-  role           String   @default("user")
+  role           String       @default("user")
   organizationId String
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
   organization   Organization @relation(fields: [organizationId], references: [id])
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
 }
 
 model Bank {
-  id              String   @id @default(cuid())
-  name            String   @unique
-  code            String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  bankStatements  BankStatement[]
+  id             String          @id @default(cuid())
+  name           String          @unique
+  code           String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  bankStatements BankStatement[]
 }
 
 model BankStatement {
-  id              String   @id @default(cuid())
-  bankId          String
-  bank            Bank     @relation(fields: [bankId], references: [id], onDelete: Cascade)
-  organizationId  String
-  organization    Organization @relation(fields: [organizationId], references: [id])
-  processedAt     DateTime @default(now())
-  transactions    Transaction[]
+  id             String        @id @default(cuid())
+  bankId         String
+  organizationId String
+  processedAt    DateTime      @default(now())
+  organization   Organization  @relation(fields: [organizationId], references: [id])
+  bank           Bank          @relation(fields: [bankId], references: [id], onDelete: Cascade)
+  transactions   Transaction[]
 }
 
 model Transaction {
-  id               String   @id @default(cuid())
-  bankStatementId  String
-  bankStatement    BankStatement @relation(fields: [bankStatementId], references: [id], onDelete: Cascade)
-  date             DateTime
-  amount           Float
-  month            String
-  description      String?
-  type             String   @default("credit")
-  createdAt        DateTime @default(now())
+  id              String        @id @default(cuid())
+  bankStatementId String
+  date            DateTime
+  amount          Float
+  month           String
+  description     String?
+  type            String        @default("credit")
+  createdAt       DateTime      @default(now())
+  bankStatement   BankStatement @relation(fields: [bankStatementId], references: [id], onDelete: Cascade)
 }

@@ -4,7 +4,6 @@ import { useState } from 'react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { 
-  LayoutDashboard, 
   Users, 
   Building2, 
   Landmark, 
@@ -14,7 +13,7 @@ import {
   LogOut
 } from 'lucide-react'
 
-export type ViewType = 'dashboard' | 'users' | 'organizations' | 'banks' | 'upload'
+export type ViewType = 'users' | 'organizations' | 'banks' | 'upload'
 
 interface SidebarProps {
   currentView: ViewType
@@ -36,7 +35,6 @@ export function Sidebar({
   const [collapsed, setCollapsed] = useState(false)
 
   const menuItems = [
-    { id: 'dashboard' as ViewType, label: 'Dashboard', icon: LayoutDashboard },
     { id: 'upload' as ViewType, label: 'Procesar PDF', icon: FileUp },
     { id: 'banks' as ViewType, label: 'Bancos', icon: Landmark },
     ...(userRole === 'admin' ? [

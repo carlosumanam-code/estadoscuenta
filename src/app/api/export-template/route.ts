@@ -66,7 +66,7 @@ export async function POST(request: NextRequest) {
     const avgMonthly = sortedMonths.length > 0 ? totalCredits / sortedMonths.length : 0
     
     resumenData.push(['Total', totalCredits, '', 'Total', totalCredits, 0])
-    resumenData.push(['Promedio Mensual', avgMonthly, '', 'Promedio Mensual', totalCredits, 0])
+    resumenData.push(['Promedio Mensual', avgMonthly, '', 'Promedio Mensual', avgMonthly, 0])
     resumenData.push(['', '', '', '', '', ''])
     resumenData.push(['', '', '', '', '', ''])
     
