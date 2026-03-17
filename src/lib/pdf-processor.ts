@@ -275,6 +275,109 @@ function extractFromBACFormat(lines: string[]): ExtractedData {
   }
 }
 
+// Extract transactions from Banco Nacional de Costa Rica (BNCR) format
+// BNCR format: FECHA | NUMERO | DESCRIPCIÓN | MONTO (+/-) | SALDO DIARIO
+// Amount ends with "+" for credits (ingresos) or "-" for debits (egresos)
+function extractFromBNCRFormat(lines: string[]): ExtractedData {
+  const credits: ExtractedTransaction[] = []
+  const debits: ExtractedTransaction[] = []
+  
+  // Extract year from "FECHA ESTE ESTADO" or "FECHA ULTIMO ESTADO"
+  let statementYear: number | null = null
+  
+  for (const line of lines) {
+    const dateMatch = line.match(/FECHA\s+(?:ESTE\s+)?ESTADO\s+(\d{2})\/(\d{2})\/(\d{4})/i)
+    if (dateMatch) {
+      statementYear = parseInt(dateMatch[3])
+      console.log('BNCR: Detected statement year:', statementYear)
+      break
+    }
+    // Alternative: look for a date pattern near the top
+    const altMatch = line.match(/(\d{2})\/(\d{2})\/(\d{4})/)
+    if (altMatch && !statementYear) {
+      statementYear = parseInt(altMatch[3])
+    }
+  }
+  
+  // If no year found, use current year
+  if (!statementYear) {
+    statementYear = new Date().getFullYear()
+    console.log('BNCR: Using current year:', statementYear)
+  }
+  
+  for (const line of lines) {
+    if (!line.trim()) continue
+    
+    // BNCR transaction lines start with date DD/MM format
+    // Example: "11/04   302392          07-04-23 GESSA SUPER COMPRO TIB SAN JOSE CRI..."
+    const dateMatch = line.match(/^\s*(\d{2})\/(\d{2})\s+/)
+    if (!dateMatch) continue
+    
+    const day = parseInt(dateMatch[1])
+    const month = parseInt(dateMatch[2])
+    const date = new Date(statementYear, month - 1, day)
+    
+    // Look for amount pattern with +/- sign at the end
+    // Pattern: amount followed by space and + or - sign
+    // Example: "3,500.00 -" or "25,500.00 +"
+    const amountSignMatch = line.match(/(\d{1,3}(?:,\d{3})*\.\d{2})\s+([+\-])/)
+    
+    if (!amountSignMatch) continue
+    
+    const amount = cleanAmount(amountSignMatch[1])
+    const sign = amountSignMatch[2]
+    
+    if (amount <= 0) continue
+    
+    // Determine type based on sign
+    // "+" = credit (ingreso), "-" = debit (egreso)
+    const type: 'credit' | 'debit' = sign === '+' ? 'credit' : 'debit'
+    
+    // Extract description - text between the transaction number and the amount
+    // Format: DD/MM   NUMBER   DESCRIPTION   AMOUNT +/-   SALDO
+    let description = line
+      .replace(/^\s*\d{2}\/\d{2}\s+/, '')  // Remove date
+      .replace(/^\d+\s+/, '')               // Remove transaction number
+      .replace(/\d{1,3}(?:,\d{3})*\.\d{2}\s+[+\-].*$/, '')  // Remove amount and everything after
+      .replace(/\s+/g, ' ')
+      .trim()
+      .substring(0, 200)
+    
+    const monthStr = getMonthString(date)
+    
+    const transaction: ExtractedTransaction = {
+      date,
+      amount,
+      description: description || (type === 'credit' ? 'Transferencia recibida' : 'Pago realizado'),
+      month: monthStr,
+      type,
+    }
+    
+    if (type === 'credit') {
+      credits.push(transaction)
+      console.log('BNCR Credit:', { date: date.toISOString().split('T')[0], amount, description: description.substring(0, 40) })
+    } else {
+      debits.push(transaction)
+      console.log('BNCR Debit:', { date: date.toISOString().split('T')[0], amount, description: description.substring(0, 40) })
+    }
+  }
+  
+  // Sort by date
+  credits.sort((a, b) => a.date.getTime() - b.date.getTime())
+  debits.sort((a, b) => a.date.getTime() - b.date.getTime())
+  
+  const totalCredits = credits.reduce((sum, t) => sum + t.amount, 0)
+  const totalDebits = debits.reduce((sum, t) => sum + t.amount, 0)
+  
+  return {
+    credits,
+    debits,
+    totalCredits,
+    totalDebits,
+    netFlow: totalCredits - totalDebits,
+  }
+}
+
 // Extract transactions from Grupo Mutual layout format
 function extractFromGrupoMutualLayout(lines: string[]): ExtractedData {
   const credits: ExtractedTransaction[] = []
@@ -630,10 +733,27 @@ export function extractAllTransactions(text: string): ExtractedData {
            upper.includes('BALANCE')
   })
   
+  // Check for BNCR (Banco Nacional) format - has amounts with +/- signs
+  // and header with "SALDO DIARIO" or typical BNCR patterns
+  const isBNCRFormat = lines.some(line => {
+    const upper = line.toUpperCase()
+    return upper.includes('SALDO DIARIO') || 
+           (upper.includes('BNCR') && line.match(/\d{1,3}(?:,\d{3})*\.\d{2}\s+[+\-]/))
+  })
+  
+  // Also check for amounts ending with +/- sign pattern
+  const hasSignPattern = lines.some(line => 
+    line.match(/\d{1,3}(?:,\d{3})*\.\d{2}\s+[+\-]/) && 
+    line.match(/^\s*\d{2}\/\d{2}\s+/)
+  )
+  
   // Detect bank format
-  if (isBACFormat || upperText.includes('BAC CREDOMATIC') || upperText.includes('BAC')) {
+  if (isBACFormat || upperText.includes('BAC CREDOMATIC')) {
     console.log('Detected BAC Credomatic format')
     result = extractFromBACFormat(lines)
+  } else if (isBNCRFormat || hasSignPattern || upperText.includes('BNCR') || upperText.includes('BANCO NACIONAL')) {
+    console.log('Detected Banco Nacional (BNCR) format')
+    result = extractFromBNCRFormat(lines)
   } else if (upperText.includes('GRUPO MUTUAL') || upperText.includes('MUTUAL ALAJUELA')) {
     console.log('Detected Grupo Mutual format')
     
