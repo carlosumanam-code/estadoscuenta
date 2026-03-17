@@ -378,6 +378,151 @@ function extractFromBNCRFormat(lines: string[]): ExtractedData {
   }
 }
 
+// Extract transactions from Banco de Costa Rica (BCR) format
+// BCR format: Fecha Mov | Fecha Cont | Tarjeta | Doc | Concepto | Monto Débito | Monto Crédito
+// Transactions have amount in ONE column: left (Débito) = expense, right (Crédito) = income
+function extractFromBCRFormat(lines: string[]): ExtractedData {
+  const credits: ExtractedTransaction[] = []
+  const debits: ExtractedTransaction[] = []
+  
+  // Detect column positions from header
+  let debitColStart = 0
+  let creditColStart = 0
+  
+  for (const line of lines) {
+    const upper = line.toUpperCase()
+    const debitMatch = upper.match(/MONTO\s*D[ÉE]BITO/i)
+    const creditMatch = upper.match(/MONTO\s*CR[ÉE]DITO/i)
+    
+    if (debitMatch && creditMatch) {
+      debitColStart = debitMatch.index || 0
+      creditColStart = creditMatch.index || 0
+      console.log('BCR column positions - Debit:', debitColStart, 'Credit:', creditColStart)
+      break
+    }
+  }
+  
+  // Extract year from statement
+  let statementYear: number | null = null
+  for (const line of lines) {
+    const periodMatch = line.match(/(\d{2})\/(\d{2})\/(\d{4})\s+al\s+(\d{2})\/(\d{2})\/(\d{4})/i)
+    if (periodMatch) {
+      statementYear = parseInt(periodMatch[6])
+      console.log('BCR: Detected statement year from period:', statementYear)
+      break
+    }
+    const dateMatch = line.match(/(\d{2})\/(\d{2})\/(\d{4})/)
+    if (dateMatch && !statementYear) {
+      statementYear = parseInt(dateMatch[3])
+    }
+  }
+  
+  if (!statementYear) {
+    statementYear = new Date().getFullYear()
+    console.log('BCR: Using current year:', statementYear)
+  }
+  
+  for (const line of lines) {
+    if (!line.trim()) continue
+    
+    // BCR transaction lines start with date DD/MM/YY format
+    const dateMatch = line.match(/^\s*(\d{2})\/(\d{2})\/(\d{2})\s+/)
+    if (!dateMatch) continue
+    
+    const day = parseInt(dateMatch[1])
+    const month = parseInt(dateMatch[2])
+    const year = parseInt(dateMatch[3]) + 2000
+    const date = new Date(year, month - 1, day)
+    
+    // Find amount with its position
+    const amountPattern = /(\d{1,3}(?:,\d{3})*\.\d{2})/g
+    let match
+    let transactionAmount = 0
+    let transactionPosition = 0
+    
+    while ((match = amountPattern.exec(line)) !== null) {
+      const amount = cleanAmount(match[1])
+      if (amount > 0) {
+        transactionAmount = amount
+        transactionPosition = match.index
+        break // Take first amount
+      }
+    }
+    
+    if (transactionAmount <= 0) continue
+    
+    // Determine type based on position
+    // If we have column positions, use them
+    let type: 'credit' | 'debit'
+    
+    if (creditColStart > debitColStart && creditColStart > 0) {
+      // Use detected column positions
+      // Amount closer to credit column = credit (income)
+      // Amount closer to debit column = debit (expense)
+      const distToDebit = Math.abs(transactionPosition - debitColStart)
+      const distToCredit = Math.abs(transactionPosition - creditColStart)
+      
+      if (distToCredit < distToDebit) {
+        type = 'credit'
+      } else {
+        type = 'debit'
+      }
+    } else {
+      // Fallback: position-based detection
+      // Debit column is typically at positions 60-90
+      // Credit column is typically at positions 100+
+      if (transactionPosition > 95) {
+        type = 'credit'
+      } else {
+        type = 'debit'
+      }
+    }
+    
+    // Extract description
+    let description = line
+      .replace(/^\s*\d{2}\/\d{2}\/\d{2}\s+/, '')
+      .replace(/^\d{2}\/\d{2}\/\d{2}\s+/, '')
+      .replace(/^\d+\s+/, '')
+      .replace(/^\d+\s+/, '')
+      .replace(/\d{1,3}(?:,\d{3})*\.\d{2}/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .substring(0, 200)
+    
+    const monthStr = getMonthString(date)
+    
+    const transaction: ExtractedTransaction = {
+      date,
+      amount: transactionAmount,
+      description: description || (type === 'credit' ? 'Transferencia recibida' : 'Pago realizado'),
+      month: monthStr,
+      type,
+    }
+    
+    if (type === 'credit') {
+      credits.push(transaction)
+      console.log('BCR Credit:', { date: date.toISOString().split('T')[0], amount: transactionAmount, pos: transactionPosition, desc: description.substring(0, 30) })
+    } else {
+      debits.push(transaction)
+      console.log('BCR Debit:', { date: date.toISOString().split('T')[0], amount: transactionAmount, pos: transactionPosition, desc: description.substring(0, 30) })
+    }
+  }
+  
+  credits.sort((a, b) => a.date.getTime() - b.date.getTime())
+  debits.sort((a, b) => a.date.getTime() - b.date.getTime())
+  
+  const totalCredits = credits.reduce((sum, t) => sum + t.amount, 0)
+  const totalDebits = debits.reduce((sum, t) => sum + t.amount, 0)
+  
+  return {
+    credits,
+    debits,
+    totalCredits,
+    totalDebits,
+    netFlow: totalCredits - totalDebits,
+  }
+}
+
 // Extract transactions from Grupo Mutual layout format
 function extractFromGrupoMutualLayout(lines: string[]): ExtractedData {
   const credits: ExtractedTransaction[] = []
@@ -733,24 +878,37 @@ export function extractAllTransactions(text: string): ExtractedData {
            upper.includes('BALANCE')
   })
   
-  // Check for BNCR (Banco Nacional) format - has amounts with +/- signs
-  // and header with "SALDO DIARIO" or typical BNCR patterns
-  const isBNCRFormat = lines.some(line => {
+  // Check for BCR (Banco de Costa Rica) format - has "Monto Débito" and "Monto Crédito" columns
+  const isBCRFormat = lines.some(line => {
     const upper = line.toUpperCase()
-    return upper.includes('SALDO DIARIO') || 
-           (upper.includes('BNCR') && line.match(/\d{1,3}(?:,\d{3})*\.\d{2}\s+[+\-]/))
+    return (upper.includes('MONTO DÉBITO') || upper.includes('MONTO DEBITO')) && 
+           (upper.includes('MONTO CRÉDITO') || upper.includes('MONTO CREDITO'))
   })
   
-  // Also check for amounts ending with +/- sign pattern
+  // Check for BNCR (Banco Nacional) format - has amounts with +/- signs
+  // BNCR specific: amounts end with +/- sign and header has "SALDO DIARIO" as column header
+  const isBNCRFormat = lines.some(line => {
+    const upper = line.toUpperCase()
+    // BNCR has "SALDO DIARIO" as a column header (not just mention in text)
+    const hasSaldoDiarioHeader = /^\s*FECHA\s+NUMERO.*SALDO/i.test(line)
+    // Or amounts with +/- signs at the end
+    const hasSignAmount = line.match(/\d{1,3}(?:,\d{3})*\.\d{2}\s+[+\-]/)
+    return hasSaldoDiarioHeader || hasSignAmount
+  })
+  
+  // Also check for amounts ending with +/- sign pattern (BNCR specific)
   const hasSignPattern = lines.some(line => 
     line.match(/\d{1,3}(?:,\d{3})*\.\d{2}\s+[+\-]/) && 
     line.match(/^\s*\d{2}\/\d{2}\s+/)
   )
   
-  // Detect bank format
+  // Detect bank format - order matters! Check most specific first
   if (isBACFormat || upperText.includes('BAC CREDOMATIC')) {
     console.log('Detected BAC Credomatic format')
     result = extractFromBACFormat(lines)
+  } else if (isBCRFormat) {
+    console.log('Detected Banco de Costa Rica (BCR) format')
+    result = extractFromBCRFormat(lines)
   } else if (isBNCRFormat || hasSignPattern || upperText.includes('BNCR') || upperText.includes('BANCO NACIONAL')) {
     console.log('Detected Banco Nacional (BNCR) format')
     result = extractFromBNCRFormat(lines)
