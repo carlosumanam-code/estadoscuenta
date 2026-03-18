@@ -20,7 +20,7 @@ export const sessionOptions: SessionOptions = {
   cookieName: 'bank_statement_session',
   cookieOptions: {
     httpOnly: true,
-    secure: false, // Always false for development
+    secure: process.env.NODE_ENV === 'production', // true en producción (Netlify)
     sameSite: 'lax',
     maxAge: 60 * 60 * 24 * 7, // 1 week
     path: '/',

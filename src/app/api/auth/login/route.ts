@@ -14,10 +14,20 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const user = await db.user.findUnique({
-      where: { email: email.toLowerCase() },
-      include: { organization: true },
-    })
+    // Test database connection
+    let user
+    try {
+      user = await db.user.findUnique({
+        where: { email: email.toLowerCase() },
+        include: { organization: true },
+      })
+    } catch (dbError: any) {
+      console.error('Database connection error:', dbError)
+      return NextResponse.json(
+        { error: 'Error de conexión a la base de datos. Verifique la configuración.' },
+        { status: 500 }
+      )
+    }
 
     if (!user) {
       return NextResponse.json(
