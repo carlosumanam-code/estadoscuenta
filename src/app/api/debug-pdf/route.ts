@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { extractTextFromPDF } from '@/lib/pdf-extractor'
+import pdfParse from 'pdf-parse'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -13,41 +13,77 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 })
     }
 
+    console.log('=== DEBUG PDF EXTRACTION ===')
+    console.log('File name:', file.name)
+    console.log('File type:', file.type)
+    console.log('File size:', file.size)
+
     const bytes = await file.arrayBuffer()
     const buffer = Buffer.from(bytes)
     
-    // Extract text from PDF using our configured extractor (worker disabled)
-    const text = await extractTextFromPDF(buffer)
+    console.log('Buffer size:', buffer.length)
+    console.log('First 20 bytes (hex):', buffer.slice(0, 20).toString('hex'))
     
-    // Show first 5000 characters of text
-    const textPreview = text?.substring(0, 5000) || ''
+    // Check if it's actually a PDF (should start with %PDF)
+    const header = buffer.slice(0, 4).toString()
+    console.log('File header:', header)
     
-    // Find transaction lines (lines with dates DD/MM/YY or DD/MM/YYYY)
-    const lines = text?.split('\n') || []
+    if (header !== '%PDF') {
+      return NextResponse.json({ 
+        error: 'File is not a valid PDF',
+        header: header,
+        bufferSize: buffer.length
+      }, { status: 400 })
+    }
+
+    // Try extraction with minimal options
+    console.log('Attempting pdf-parse...')
+    
+    let data
+    try {
+      data = await pdfParse(buffer, { max: 0 })
+      console.log('pdf-parse success')
+    } catch (parseError: any) {
+      console.error('pdf-parse error:', parseError.message)
+      console.error('pdf-parse stack:', parseError.stack)
+      return NextResponse.json({ 
+        error: 'pdf-parse failed: ' + parseError.message,
+        stack: parseError.stack,
+        bufferSize: buffer.length,
+        header: header
+      }, { status: 500 })
+    }
+    
+    console.log('Pages:', data.numpages)
+    console.log('Info:', data.info)
+    console.log('Text length:', data.text?.length || 0)
+    
+    // Show first 3000 characters of text
+    const textPreview = data.text?.substring(0, 3000) || ''
+    
+    // Find transaction lines
+    const lines = data.text?.split('\n') || []
     const transactionLines = lines.filter(line => 
-      /^\s*\d{2}\/\d{2}\/\d{2}/.test(line) ||  // BCR format DD/MM/YY
-      /^\s*\d{2}\/\d{2}\/\d{4}/.test(line) ||  // Other format DD/MM/YYYY
-      /DEBITO|DÉBITO|CRÉDITO|CREDITO|BALANCE/i.test(line)
+      /^\s*\d{2}\/\d{2}\/\d{2}/.test(line) ||
+      /^\s*\d{2}\/\d{2}\/\d{4}/.test(line) ||
+      /DEBITO|DÉBITO|CRÉDITO|CREDITO|BALANCE|MONTO/i.test(line)
     ).slice(0, 50)
-    
-    // Also find lines with column headers
-    const headerLines = lines.filter(line =>
-      /MONTO\s*D[ÉE]BITO/i.test(line) ||
-      /MONTO\s*CR[ÉE]DITO/i.test(line) ||
-      /FECHA.*MOVIMIENTO/i.test(line)
-    ).slice(0, 10)
     
     return NextResponse.json({
       success: true,
-      textLength: text?.length || 0,
+      pages: data.numpages,
+      textLength: data.text?.length || 0,
+      info: data.info,
       textPreview,
-      headerLines,
-      transactionLines
+      transactionLines,
+      totalLines: lines.length
     })
     
   } catch (error: any) {
+    console.error('Debug PDF error:', error)
     return NextResponse.json({ 
-      error: error.message 
+      error: error.message,
+      stack: error.stack
     }, { status: 500 })
   }
 }
