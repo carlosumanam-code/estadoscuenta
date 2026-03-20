@@ -74,27 +74,41 @@ export async function POST(request: NextRequest) {
     let buffer: Buffer
     const anyFile = file as any
     
+    console.log('File type:', typeof file)
+    console.log('File constructor:', anyFile?.constructor?.name)
+    console.log('File size:', anyFile.size)
+    
     if (typeof anyFile.arrayBuffer === 'function') {
-      // Standard File API
       console.log('Using arrayBuffer()')
       const bytes = await anyFile.arrayBuffer()
       buffer = Buffer.from(bytes)
     } else if (typeof anyFile.stream === 'function') {
-      // Use stream API (Netlify compatibility)
       console.log('Using stream()')
+      const stream = anyFile.stream()
       const chunks: Uint8Array[] = []
-      const reader = anyFile.stream().getReader()
+      const reader = stream.getReader()
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-        chunks.push(value)
+        if (value) chunks.push(value)
       }
       buffer = Buffer.concat(chunks)
+    } else if (file instanceof Blob) {
+      console.log('File is Blob')
+      const bytes = await (file as Blob).arrayBuffer()
+      buffer = Buffer.from(bytes)
     } else if (Buffer.isBuffer(file)) {
       console.log('File is already a Buffer')
       buffer = file
+    } else if (anyFile._buffer) {
+      console.log('Using _buffer')
+      buffer = Buffer.from(anyFile._buffer)
+    } else if (anyFile.data) {
+      console.log('Using data')
+      buffer = Buffer.from(anyFile.data)
     } else {
       console.log('File object properties:', Object.keys(anyFile))
+      console.log('File methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(anyFile)))
       throw new Error('Cannot process file - no compatible method found')
     }
 

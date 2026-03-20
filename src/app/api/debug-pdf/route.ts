@@ -21,39 +21,52 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'No file provided' }, { status: 400 })
       }
       
+      const anyFile = file as any
       console.log('File type:', typeof file)
-      console.log('File constructor:', (file as any)?.constructor?.name)
+      console.log('File constructor:', anyFile?.constructor?.name)
+      console.log('File methods:', Object.getOwnPropertyNames(Object.getPrototypeOf(anyFile)))
+      console.log('File size:', anyFile.size)
+      console.log('File name:', anyFile.name)
       
       // Try different methods to get buffer
-      const anyFile = file as any
-      
       if (typeof anyFile.arrayBuffer === 'function') {
-        // Standard File API
         console.log('Using arrayBuffer()')
         const bytes = await anyFile.arrayBuffer()
         buffer = Buffer.from(bytes)
       } else if (typeof anyFile.stream === 'function') {
-        // Use stream API
         console.log('Using stream()')
+        const stream = anyFile.stream()
         const chunks: Uint8Array[] = []
-        const reader = anyFile.stream().getReader()
+        const reader = stream.getReader()
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
-          chunks.push(value)
+          if (value) chunks.push(value)
         }
         buffer = Buffer.concat(chunks)
+      } else if (anyFile instanceof Blob) {
+        console.log('File is Blob')
+        const bytes = await (anyFile as Blob).arrayBuffer()
+        buffer = Buffer.from(bytes)
       } else if (Buffer.isBuffer(file)) {
         console.log('File is already a Buffer')
         buffer = file
-      } else if (anyFile.buffer) {
-        console.log('Using .buffer property')
-        buffer = Buffer.from(anyFile.buffer)
       } else {
-        // Last resort: try to get it as text and convert
-        console.log('Trying toString()')
-        const text = await anyFile.text()
-        buffer = Buffer.from(text, 'binary')
+        // Try to get buffer from internal _buffer or data property
+        if (anyFile._buffer) {
+          console.log('Using _buffer')
+          buffer = Buffer.from(anyFile._buffer)
+        } else if (anyFile.data) {
+          console.log('Using data')
+          buffer = Buffer.from(anyFile.data)
+        } else {
+          return NextResponse.json({ 
+            error: 'Cannot process file - no compatible method found',
+            fileType: typeof file,
+            fileConstructor: anyFile?.constructor?.name,
+            methods: Object.getOwnPropertyNames(Object.getPrototypeOf(anyFile))
+          }, { status: 500 })
+        }
       }
     } else {
       // Raw binary
