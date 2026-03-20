@@ -1,5 +1,5 @@
-// BCR (Banco de Costa Rica) PDF Parser - Pattern-based analysis
-// Uses keyword detection + debit column analysis (double validation)
+// BCR (Banco de Costa Rica) PDF Parser
+// Parses transaction data extracted from BCR PDF statements
 
 export interface BCRTransaction {
   date: Date
@@ -35,200 +35,119 @@ function parseDate(dateStr: string): Date | null {
   return new Date(year, month - 1, day)
 }
 
-// Check if line contains credit-related keywords
-function hasCreditKeywords(text: string): boolean {
-  const upper = text.toUpperCase()
-  return upper.includes('SINPE') || 
-         upper.includes('TRANSFERENCIA') ||
-         upper.includes('TRANSFER')
-}
+// Keywords that indicate CREDIT transactions (ingresos)
+const CREDIT_KEYWORDS = [
+  'SINPE MOVIL',
+  'SINPE MOVIL OTRA ENT',
+  'MONEDERO SINPE',
+  'PIN ENTRANTE SINPE',
+  'DTR TIEMPOREAL SINPE',
+  'TRANSFERENC BANCOBCR',
+  'NC DEPOSITO',
+  'CREDITO POR DEP',
+  'DEPOSITOS -',
+  'INTS GANADOS',
+]
 
-// Find all amounts in a line with their positions
-function findAmounts(line: string): { value: number; text: string; index: number }[] {
-  const amounts: { value: number; text: string; index: number }[] = []
-  const pattern = /(\d{1,3}(?:,\d{3})*\.\d{2})/g
-  let match
-  
-  while ((match = pattern.exec(line)) !== null) {
-    const value = parseAmount(match[1])
-    amounts.push({
-      value,
-      text: match[1],
-      index: match.index || 0
-    })
-  }
-  
-  return amounts
-}
+// Keywords that indicate DEBIT transactions (gastos)
+const DEBIT_KEYWORDS = [
+  'COMPRAS EN COMERCIOS',
+  'DB AH PAGO',
+  'ND AH',
+  'PG AH',
+  'PAG SERV PUB',
+  'TASACION BANCOBCR',
+  'DEBITO COMPENSADO',
+]
 
-// Check if there's a "debit amount" (non-zero amount in debit position)
-// In BCR statements, the pattern is typically:
-// ... DESCRIPTION | DEBIT | CREDIT | BALANCE
-// We detect this by analyzing the amounts pattern
-function hasDebitAmount(amounts: { value: number; text: string; index: number }[], lineLength: number): boolean {
-  if (amounts.length < 2) return false
+// Determine if a transaction is a credit based on description
+function isCreditTransaction(description: string): boolean {
+  const upper = description.toUpperCase()
   
-  // In BCR text, when extracted linearly:
-  // - If there are 3 amounts: typically DEBIT, CREDIT, BALANCE
-  // - If there are 2 amounts: could be (DEBIT/CRÉDITO), BALANCE
-  //
-  // The KEY insight: When it's a CREDIT transaction, the DEBIT column shows 0.00 or is empty
-  // When it's a DEBIT transaction, the DEBIT column has a real amount
-  
-  // Strategy: Look at the first transaction amount (not the balance)
-  // If amounts.length >= 3: first amount is the transaction (debit or credit depending on column)
-  // If amounts.length == 2: we need to determine which column the amount is in
-  
-  if (amounts.length >= 3) {
-    // Pattern: DEBIT CREDIT BALANCE
-    // The first amount is what we need to check
-    const firstAmount = amounts[0].value
-    const secondAmount = amounts[1].value
-    
-    // If first is non-zero and second is 0 or very small, it's a DEBIT
-    // If first is 0 or very small and second is non-zero, it's a CREDIT
-    
-    if (firstAmount > 0 && secondAmount === 0) {
-      // Debit column has amount, credit is 0 = DEBIT transaction
-      return true
-    } else if (firstAmount === 0 && secondAmount > 0) {
-      // Debit column is 0, credit has amount = CREDIT transaction
-      return false
-    } else if (firstAmount > 0 && secondAmount > 0) {
-      // Both have amounts - this shouldn't happen in normal transactions
-      // Could be a summary row, treat as debit
+  // Check for credit keywords
+  for (const keyword of CREDIT_KEYWORDS) {
+    if (upper.includes(keyword)) {
       return true
     }
-  } else if (amounts.length === 2) {
-    // Pattern: could be TRANSACTION, BALANCE
-    // We need to determine if the transaction is debit or credit
-    // Use position heuristic: if the first amount is in the first half of the line,
-    // it's more likely to be in the debit column
-    
-    const firstAmount = amounts[0]
-    const relativePosition = firstAmount.index / lineLength
-    
-    // If amount appears before 60% of the line, it's likely in debit column
-    if (relativePosition < 0.6 && firstAmount.value > 0) {
-      return true
-    }
-    
-    return false
   }
   
   return false
 }
 
-// Get the transaction amount (excluding balance)
-function getTransactionAmount(amounts: { value: number; text: string; index: number }[]): number {
-  if (amounts.length === 0) return 0
+// Determine if a transaction is a debit based on description
+function isDebitTransaction(description: string): boolean {
+  const upper = description.toUpperCase()
   
-  if (amounts.length >= 3) {
-    // Pattern: DEBIT CREDIT BALANCE
-    // Return the non-zero amount between first two
-    if (amounts[0].value > 0) return amounts[0].value
-    if (amounts[1].value > 0) return amounts[1].value
-    return 0
-  } else if (amounts.length === 2) {
-    // First amount is the transaction
-    return amounts[0].value
-  } else if (amounts.length === 1) {
-    return amounts[0].value
+  // Check for debit keywords
+  for (const keyword of DEBIT_KEYWORDS) {
+    if (upper.includes(keyword)) {
+      return true
+    }
   }
   
-  return 0
+  return false
 }
 
-// Main BCR parser with double validation logic
+// Main BCR parser
 export function parseBCRText(text: string): BCRParseResult {
   const credits: BCRTransaction[] = []
   const debits: BCRTransaction[] = []
   
-  console.log('=== BCR Pattern-Based Parser ===')
+  console.log('=== BCR Parser ===')
   console.log('Text length:', text.length)
   
-  const lines = text.split('\n')
-  console.log('Total lines:', lines.length)
+  // Pattern to match transaction lines
+  // Format: DD/MM/YY DD/MM/YY XXXXXX DOC_NUM DESCRIPTION AMOUNT
+  // Example: 31/08/24 02/09/24 80998792 PIN ENTRANTE SINPE - HUMBERTO 1,155,000.00
   
+  const transactionPattern = /(\d{2}\/\d{2}\/\d{2})\s+(\d{2}\/\d{2}\/\d{2})\s+(\d+)\s+(\d+)\s+(.+?)\s+(\d{1,3}(?:,\d{3})*\.\d{2})/g
+  
+  let match
   let transactionCount = 0
   
-  for (const line of lines) {
-    const trimmedLine = line.trim()
-    if (!trimmedLine) continue
-    
-    // Check if this is a transaction line (starts with date DD/MM/YY)
-    const dateMatch = trimmedLine.match(/^(\d{2}\/\d{2}\/\d{2})/)
-    if (!dateMatch) continue
-    
+  while ((match = transactionPattern.exec(text)) !== null) {
     transactionCount++
     
-    // Get the date
-    const date = parseDate(dateMatch[1])
-    if (!date) continue
+    const dateStr = match[1]
+    const description = match[5].trim()
+    const amountStr = match[6]
     
-    // Find all amounts
-    const amounts = findAmounts(trimmedLine)
-    if (amounts.length === 0) continue
+    const date = parseDate(dateStr)
+    const amount = parseAmount(amountStr)
     
-    // Get transaction amount
-    const transactionAmount = getTransactionAmount(amounts)
-    if (transactionAmount <= 0) continue
+    if (!date || amount <= 0) continue
     
-    // Extract description
-    let description = trimmedLine
-      .replace(/^\d{2}\/\d{2}\/\d{2}\s+/, '') // Remove first date
-      .replace(/^\d{2}\/\d{2}\/\d{2}\s+/, '') // Remove second date
-      .replace(/\d{1,3}(?:,\d{3})*\.\d{2}/g, '') // Remove amounts
-      .replace(/\s+/g, ' ')
-      .trim()
-      .substring(0, 200)
+    // Determine transaction type
+    let type: 'credit' | 'debit' | null = null
     
-    // === DOUBLE VALIDATION LOGIC ===
-    // 
-    // 1. Tiene SINPE/Transferencia en la descripción?
-    //    - SI + NO tiene monto en débito = INGRESO (CRÉDITO)
-    //    - SI + SÍ tiene monto en débito = GASTO (DÉBITO)
-    // 2. NO tiene SINPE/Transferencia = GASTO (DÉBITO)
-    
-    const hasKeywords = hasCreditKeywords(description)
-    const hasDebit = hasDebitAmount(amounts, trimmedLine.length)
-    
-    let isCredit = false
-    
-    if (hasKeywords) {
-      // Has SINPE/Transferencia keywords
-      if (!hasDebit) {
-        // No debit amount = INGRESO (CRÉDITO)
-        isCredit = true
-        console.log(`[INGRESO] ${dateMatch[1]} | ${transactionAmount} | ${description.substring(0, 40)}...`)
-      } else {
-        // Has debit amount = GASTO (DÉBITO)
-        isCredit = false
-        console.log(`[GASTO - con keyword] ${dateMatch[1]} | ${transactionAmount} | ${description.substring(0, 40)}...`)
-      }
+    if (isCreditTransaction(description)) {
+      type = 'credit'
+    } else if (isDebitTransaction(description)) {
+      type = 'debit'
     } else {
-      // No keywords = GASTO (DÉBITO)
-      isCredit = false
+      // Unknown - default to debit but log it
+      console.log('Unknown transaction type:', description.substring(0, 50))
+      type = 'debit'
     }
     
     const transaction: BCRTransaction = {
       date,
-      amount: transactionAmount,
-      description: description || 'Transacción',
-      type: isCredit ? 'credit' : 'debit',
-      rawLine: trimmedLine
+      amount,
+      description: description.substring(0, 200),
+      type,
+      rawLine: match[0]
     }
     
-    if (isCredit) {
+    if (type === 'credit') {
       credits.push(transaction)
     } else {
       debits.push(transaction)
     }
   }
   
-  console.log('Transaction lines processed:', transactionCount)
-  console.log('Credits found:', credits.length)
-  console.log('Debits found:', debits.length)
+  console.log('Transactions found:', transactionCount)
+  console.log('Credits:', credits.length)
+  console.log('Debits:', debits.length)
   
   // Sort by date
   credits.sort((a, b) => a.date.getTime() - b.date.getTime())

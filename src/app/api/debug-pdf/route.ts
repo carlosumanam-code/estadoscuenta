@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { extractTextFromPDF } from '@/lib/pdf-extractor'
+import { parseBCRText } from '@/lib/bcr-text-parser'
 
 export const runtime = 'nodejs'
 export const maxDuration = 60
@@ -43,14 +44,26 @@ export async function POST(request: NextRequest) {
     // Extract text using our simple parser
     const text = await extractTextFromPDF(buffer)
     
-    const lines = text.split('\n').filter(l => l.trim())
+    // Parse BCR transactions
+    const result = parseBCRText(text)
     
     return NextResponse.json({
       success: true,
       textLength: text.length,
-      lineCount: lines.length,
-      textPreview: text.substring(0, 3000),
-      firstLines: lines.slice(0, 30)
+      credits: result.credits.length,
+      debits: result.debits.length,
+      totalCredits: result.totalCredits,
+      totalDebits: result.totalDebits,
+      creditTransactions: result.credits.slice(0, 10).map(t => ({
+        date: t.date.toISOString().split('T')[0],
+        amount: t.amount,
+        description: t.description.substring(0, 60)
+      })),
+      debitTransactions: result.debits.slice(0, 10).map(t => ({
+        date: t.date.toISOString().split('T')[0],
+        amount: t.amount,
+        description: t.description.substring(0, 60)
+      }))
     })
     
   } catch (error: any) {
