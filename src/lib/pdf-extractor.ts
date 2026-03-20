@@ -1,31 +1,13 @@
 // PDF extractor using pdf-parse - NO worker dependencies
 // This version uses text pattern analysis instead of X,Y positions
-// Import polyfill FIRST before any PDF library
-import './global-polyfill'
 
 import pdfParse from 'pdf-parse'
 
-// CRITICAL: Disable PDF.js workers to prevent serverless deployment issues
-// This must be done BEFORE any pdf-parse calls
-if (typeof globalThis !== 'undefined') {
-  // @ts-ignore - pdf.js global configuration
-  globalThis.pdfjsWorker = null
-  // @ts-ignore - disable worker for pdf.js
-  if (globalThis.PDFJS) {
-    globalThis.PDFJS.disableWorker = true
-  }
-}
-
-// Configure pdf-parse options to disable worker
+// Configure pdf-parse options - minimal config to avoid worker issues
+// The patch applied to pdf-parse should handle worker disabling at the source
 const PDF_PARSE_OPTIONS = {
-  // @ts-ignore - internal option to disable worker
-  disableWorker: true,
-  // Use standard font renderer (more compatible)
-  standardFontDataUrl: undefined,
-  // Disable range requests (not needed for buffer input)
-  disableRange: true,
-  // Disable stream (not needed for buffer input)
-  disableStream: true,
+  max: 0, // No page limit
+  version: 'v1.10.100' // Use specific pdf.js version bundled with pdf-parse
 }
 
 // Text item with position information (kept for interface compatibility)
@@ -49,35 +31,35 @@ export interface TransactionLine {
 }
 
 export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
-  console.log('Starting PDF extraction with pdf-parse (worker disabled), buffer size:', buffer.length)
+  console.log('Starting PDF extraction, buffer size:', buffer.length)
 
   try {
-    // Pass options to disable worker - critical for serverless environments
+    // Simple extraction - patch handles worker disabling
     const data = await pdfParse(buffer, PDF_PARSE_OPTIONS)
 
     console.log('PDF pages:', data.numpages)
     console.log('PDF info:', data.info)
+    console.log('Text length:', data.text?.length || 0)
 
     if (data.text && data.text.trim()) {
-      console.log('PDF extraction successful, text length:', data.text.length)
+      console.log('PDF extraction successful')
       return data.text
     }
 
-    throw new Error('No text was extracted from the PDF')
+    throw new Error('No text was extracted from the PDF - the file may be a scanned image without OCR')
 
   } catch (error: any) {
-    console.error('PDF extraction error:', error)
+    console.error('PDF extraction error:', error.message)
+    console.error('Error stack:', error.stack)
     throw new Error(`Error al extraer texto del PDF: ${error.message}`)
   }
 }
 
 // Extract text with positions - dummy implementation that uses text analysis instead
 export async function extractTextWithPositions(buffer: Buffer): Promise<TextItemWithPosition[]> {
-  console.log('Starting PDF text extraction (text-based analysis, worker disabled), buffer size:', buffer.length)
+  console.log('Starting PDF text extraction, buffer size:', buffer.length)
   
   try {
-    // Just use regular pdf-parse - no position extraction needed
-    // Pass options to disable worker
     const data = await pdfParse(buffer, PDF_PARSE_OPTIONS)
     const text = data.text
     
