@@ -1,0 +1,23 @@
+diff --git a/node_modules/pdf-parse/lib/pdf.js/v1.10.100/build/pdf.js b/node_modules/pdf-parse/lib/pdf.js/v1.10.100/build/pdf.js
+index d355798..b4e3c83 100644
+--- a/node_modules/pdf-parse/lib/pdf.js/v1.10.100/build/pdf.js
++++ b/node_modules/pdf-parse/lib/pdf.js/v1.10.100/build/pdf.js
+@@ -3339,17 +3339,7 @@ var useRequireEnsure = false;
+     workerSrc = requirejs.toUrl('pdfjs-dist/build/pdf.worker.js');
+   }
+   var dynamicLoaderSupported = typeof requirejs !== 'undefined' && requirejs.load;
+-  fakeWorkerFilesLoader = useRequireEnsure ? function (callback) {
+-    require.ensure([], function () {
+-      var worker;
+-      worker = require('./pdf.worker.js');
+-      callback(worker.WorkerMessageHandler);
+-    });
+-  } : dynamicLoaderSupported ? function (callback) {
+-    requirejs(['pdfjs-dist/build/pdf.worker'], function (worker) {
+-      callback(worker.WorkerMessageHandler);
+-    });
+-  } : null;
++  fakeWorkerFilesLoader = null; workerSrc = "";
+ }
+ var PDFNetworkStream;
+ function setPDFNetworkStreamClass(cls) {

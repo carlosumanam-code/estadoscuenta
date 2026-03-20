@@ -1,0 +1,60 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+}
+
+model Organization {
+  id             String          @id @default(cuid())
+  name           String          @unique
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  users          User[]
+}
+
+model User {
+  id           String        @id @default(cuid())
+  email        String        @unique
+  password     String
+  name         String
+  role         String        @default("user")
+  organizationId String
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  organization Organization  @relation(fields: [organizationId], references: [id])
+  transactions Transaction[]
+}
+
+model Bank {
+  id             String          @id @default(cuid())
+  name           String          @unique
+  code           String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  bankStatements BankStatement[]
+}
+
+model BankStatement {
+  id             String        @id @default(cuid())
+  bankId         String
+  processedAt    DateTime      @default(now())
+  bank           Bank          @relation(fields: [bankId], references: [id], onDelete: Cascade)
+  transactions   Transaction[]
+}
+
+model Transaction {
+  id              String        @id @default(cuid())
+  bankStatementId String
+  userId          String
+  date            DateTime
+  amount          Float
+  month           String
+  description     String?
+  type            String        @default("credit")
+  createdAt       DateTime      @default(now())
+  bankStatement   BankStatement @relation(fields: [bankStatementId], references: [id], onDelete: Cascade)
+  user            User          @relation(fields: [userId], references: [id])
+}
