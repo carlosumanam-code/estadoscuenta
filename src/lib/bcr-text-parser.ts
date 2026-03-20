@@ -35,50 +35,81 @@ function parseDate(dateStr: string): Date | null {
   return new Date(year, month - 1, day)
 }
 
-// Keywords that indicate CREDIT transactions (ingresos)
+// Keywords that indicate CREDIT transactions (ingresos - dinero que ENTRA)
+// IMPORTANTE: Solo transacciones donde el dinero ENTRA a la cuenta
 const CREDIT_KEYWORDS = [
-  'SINPE',
-  'TRANSFERENC',
-  'MONEDERO',
-  'PIN ENTRANTE',
-  'DTR TIEMPOREAL',
-  'NC DEPOSITO',
-  'CREDITO POR DEP',
-  'DEPOSITOS -',
-  'INTS GANADOS',
+  'PIN ENTRANTE',        // SINPE entrante - dinero que RECIBO
+  'ENTRANTE',            // Cualquier transferencia entrante
+  'NC DEPOSITO',         // Nota de crédito por depósito
+  'CREDITO POR DEP',     // Crédito por depósito
+  'DEPOSITOS -',         // Depósitos recibidos
+  'INTS GANADOS',        // Intereses ganados
+  'DTR TIEMPOREAL',      // Transferencia recibida en tiempo real
 ]
 
-// Keywords that indicate DEBIT transactions (gastos)
+// Keywords that indicate DEBIT transactions (gastos - dinero que SALE)
+// IMPORTANTE: Transferencias SALIENTES aunque contengan "SINPE" o "TRANSFERENC"
 const DEBIT_KEYWORDS = [
-  'COMPRAS EN COMERCIOS',
-  'DB AH PAGO',
-  'ND AH',
-  'PG AH',
-  'PAG SERV PUB',
-  'TASACION',
-  'DEBITO COMPENSADO',
-  'COSEVI',
+  // SINPE SALIENTE - transferencias a otras entidades
+  'SINPE MOVIL OTRA ENT',   // SINPE móvil a OTRA entidad = SALIDA
+  'SINPE MOVIL',            // SINPE móvil genérico = SALIDA (por defecto)
+  'SINPE MÓVIL',            // Con acento
+
+  // Compras y pagos
+  'COMPRAS EN COMERCIOS',   // Débito por compras
+  'DB AH PAGO',             // Débito ahorro por pago
+  'ND AH',                  // Nota de débito ahorro
+  'PG AH',                  // Pago desde ahorro
+  'PAG SERV PUB',           // Pago servicios públicos
+  'DEBITO COMPENSADO',      // Débito compensado
+
+  // Otros gastos
+  'TASACION',               // Tasación
+  'COSEVI',                 // Pago COSEVI
+  'PAGOFINALPAQUETE',       // Pago de paquete
+  'DIEZMO',                 // Diezmo (donación)
+  'HONORARIOS',             // Pagos de honorarios (salida)
+  'PRESTAMO',               // Pago de préstamo (salida)
 ]
 
 // Determine transaction type based on description
 function getTransactionType(description: string): 'credit' | 'debit' {
   const upper = description.toUpperCase()
-  
-  // Check for credit keywords first
-  for (const keyword of CREDIT_KEYWORDS) {
-    if (upper.includes(keyword)) {
-      return 'credit'
-    }
+
+  // REGLA 1: Si contiene "ENTRANTE", es CRÉDITO (dinero que entra)
+  // Esto tiene prioridad sobre todo lo demás
+  if (upper.includes('ENTRANTE')) {
+    return 'credit'
   }
-  
-  // Check for debit keywords
+
+  // REGLA 2: Verificar palabras clave de DÉBITO (salidas de dinero)
+  // Esto debe ir ANTES de verificar créditos para evitar falsos positivos
   for (const keyword of DEBIT_KEYWORDS) {
     if (upper.includes(keyword)) {
       return 'debit'
     }
   }
-  
-  // Default to debit
+
+  // REGLA 3: Verificar palabras clave de CRÉDITO (entradas de dinero)
+  for (const keyword of CREDIT_KEYWORDS) {
+    if (upper.includes(keyword)) {
+      return 'credit'
+    }
+  }
+
+  // REGLA 4: Si contiene "SINPE" sin "ENTRANTE", asumir DÉBITO
+  // La mayoría de SINPEs son salientes
+  if (upper.includes('SINPE') && !upper.includes('ENTRANTE')) {
+    return 'debit'
+  }
+
+  // REGLA 5: Si contiene "TRANSFERENC" sin "ENTRANTE", asumir DÉBITO
+  // Las transferencias salientes son más comunes en estados de cuenta
+  if (upper.includes('TRANSFERENC') && !upper.includes('ENTRANTE')) {
+    return 'debit'
+  }
+
+  // Por defecto: DÉBITO (más conservador)
   return 'debit'
 }
 
