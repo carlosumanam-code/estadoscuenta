@@ -1,8 +1,8 @@
-// PDF text extractor - decompresses FlateDecode streams
+// PDF text extractor - decompresses FlateDecode streams and tracks Y positions
 import zlib from 'zlib'
 
 export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
-  console.log('Starting PDF extraction with decompression, buffer size:', buffer.length)
+  console.log('Starting PDF extraction with position tracking, buffer size:', buffer.length)
 
   try {
     // Check PDF header
@@ -12,10 +12,11 @@ export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
     }
 
     const content = buffer.toString('latin1')
-    const textParts: string[] = []
+    
+    // Collect text items with Y positions
+    const textItems: { text: string; y: number; x: number }[] = []
     
     // Find all stream objects and decompress them
-    // Pattern: stream ... endstream
     const streamPattern = /<<[^>]*>>\s*stream\r?\n([\s\S]*?)\r?\n?endstream/gi
     
     let match
@@ -26,60 +27,85 @@ export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
       // Check if this stream is FlateDecode (compressed)
       if (streamHeader.includes('FlateDecode') || streamHeader.includes('/Filter')) {
         try {
-          // Convert latin1 string back to buffer for decompression
           const compressedBuffer = Buffer.from(streamContent, 'latin1')
-          
-          // Decompress
           const decompressed = zlib.inflateSync(compressedBuffer, { finishFlush: zlib.constants.Z_SYNC_FLUSH })
           const streamText = decompressed.toString('latin1')
           
-          // Extract text from decompressed stream
-          const texts = extractTextFromStream(streamText)
-          textParts.push(...texts)
+          const items = extractTextWithPositions(streamText)
+          textItems.push(...items)
           
         } catch (decompressError: any) {
-          // Some streams might not be compressed or might be malformed
           console.log('Could not decompress stream:', decompressError.message)
-          
-          // Try to extract text anyway
-          const texts = extractTextFromStream(streamContent)
-          textParts.push(...texts)
+          const items = extractTextWithPositions(streamContent)
+          textItems.push(...items)
         }
       } else {
-        // Not compressed, extract directly
-        const texts = extractTextFromStream(streamContent)
-        textParts.push(...texts)
+        const items = extractTextWithPositions(streamContent)
+        textItems.push(...items)
       }
     }
     
-    // Also extract from metadata (Title, Author, etc.)
+    // Also extract from metadata
     const metaPattern = /\/(Title|Author|Subject|Keywords|Creator)\s*\(([^)]+)\)/g
     while ((match = metaPattern.exec(content)) !== null) {
       if (match[2] && match[2].trim()) {
-        textParts.push(match[2])
+        textItems.push({ text: decodePdfString(match[2]), y: 0, x: 0 })
       }
     }
     
-    // Combine all text - use newlines to preserve line structure
-    // This is important for parsers that expect line-based format (like BAC)
-    let result = textParts.join('\n')
+    // Group texts by Y position (within tolerance of 2 units)
+    const yTolerance = 2
+    const yGroups = new Map<number, { text: string; x: number }[]>()
     
-    // Clean up escape sequences while preserving line structure
+    for (const item of textItems) {
+      // Find existing group or create new one
+      let foundY = item.y
+      for (const existingY of yGroups.keys()) {
+        if (Math.abs(existingY - item.y) <= yTolerance) {
+          foundY = existingY
+          break
+        }
+      }
+      
+      if (!yGroups.has(foundY)) {
+        yGroups.set(foundY, [])
+      }
+      yGroups.get(foundY)!.push({ text: item.text, x: item.x })
+    }
+    
+    // Sort Y positions (descending - PDF Y goes from bottom to top)
+    const sortedYs = Array.from(yGroups.keys()).sort((a, b) => b - a)
+    
+    // Build lines by combining texts at same Y, sorted by X
+    const lines: string[] = []
+    for (const y of sortedYs) {
+      const items = yGroups.get(y)!
+      items.sort((a, b) => a.x - b.x)
+      const lineText = items.map(i => i.text).join(' ')
+      if (lineText.trim()) {
+        lines.push(lineText.trim())
+      }
+    }
+    
+    let result = lines.join('\n')
+    
+    // Clean up
     result = result
-      .replace(/\\n/g, ' ')        // Literal \n string -> space
-      .replace(/\\r/g, ' ')        // Literal \r string -> space
-      .replace(/\\t/g, ' ')        // Literal \t string -> space
-      .replace(/\\\(/g, '(')       // Unescape parentheses
+      .replace(/\\n/g, ' ')
+      .replace(/\\r/g, ' ')
+      .replace(/\\t/g, ' ')
+      .replace(/\\\(/g, '(')
       .replace(/\\\)/g, ')')
-      .replace(/\\\\/g, '\\')      // Unescape backslash
+      .replace(/\\\\/g, '\\')
       .replace(/\\(\d{1,3})/g, (_, octal) => String.fromCharCode(parseInt(octal, 8)))
-      .replace(/[ \t]+/g, ' ')     // Collapse multiple spaces/tabs to single space (preserve newlines)
-      .replace(/\n\s+/g, '\n')     // Remove leading spaces on lines
-      .replace(/\s+\n/g, '\n')     // Remove trailing spaces on lines
-      .replace(/\n{3,}/g, '\n\n')  // Collapse multiple blank lines to double
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n\s+/g, '\n')
+      .replace(/\s+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
       .trim()
     
-    console.log('Extracted text parts:', textParts.length)
+    console.log('Extracted text items:', textItems.length)
+    console.log('Lines with content:', lines.length)
     console.log('Combined text length:', result.length)
     
     if (result.length > 0) {
@@ -94,56 +120,105 @@ export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
   }
 }
 
-// Extract text operators from a PDF content stream
-// Preserves line structure by detecting BT/ET blocks as separate lines
-function extractTextFromStream(streamText: string): string[] {
-  const lines: string[] = []
+// Extract text with Y position tracking from PDF content stream
+function extractTextWithPositions(streamText: string): { text: string; y: number; x: number }[] {
+  const items: { text: string; y: number; x: number }[] = []
   
-  // Process BT...ET blocks (text blocks) - each block is typically a line
+  // Current text matrix (for position tracking)
+  let currentX = 0
+  let currentY = 0
+  let textMatrix = [1, 0, 0, 1, 0, 0] // Identity matrix
+  
+  // Process BT...ET blocks
   const btEtPattern = /BT\s*([\s\S]*?)\s*ET/g
   let match
   
   while ((match = btEtPattern.exec(streamText)) !== null) {
     const block = match[1]
-    const lineParts: string[] = []
     
-    // Pattern 1: (text)Tj - show text
+    // Reset matrix at start of BT
+    textMatrix = [1, 0, 0, 1, 0, 0]
+    currentX = 0
+    currentY = 0
+    
+    // Parse operators in order
+    // Tm - set text matrix: a b c d e f
+    const tmPattern = /(\d+\.?\d*)\s+(\d+\.?\d*)\s+(\d+\.?\d*)\s+(\d+\.?\d*)\s+(\d+\.?\d*)\s+(\d+\.?\d*)\s+Tm/g
+    let tmMatch
+    while ((tmMatch = tmPattern.exec(block)) !== null) {
+      textMatrix = [
+        parseFloat(tmMatch[1]),
+        parseFloat(tmMatch[2]),
+        parseFloat(tmMatch[3]),
+        parseFloat(tmMatch[4]),
+        parseFloat(tmMatch[5]),
+        parseFloat(tmMatch[6])
+      ]
+      currentX = textMatrix[4]
+      currentY = textMatrix[5]
+    }
+    
+    // Td/TD - move text position: x y Td
+    const tdPattern = /(-?\d+\.?\d*)\s+(-?\d+\.?\d*)\s+TD?/g
+    let tdMatch
+    while ((tdMatch = tdPattern.exec(block)) !== null) {
+      const dx = parseFloat(tdMatch[1])
+      const dy = parseFloat(tdMatch[2])
+      currentX += dx
+      currentY += dy
+      textMatrix[4] = currentX
+      textMatrix[5] = currentY
+    }
+    
+    // Extract text with position
+    // Pattern 1: (text)Tj
     const tjPattern = /\(([^)]*)\)\s*Tj/g
     let tjMatch
     while ((tjMatch = tjPattern.exec(block)) !== null) {
       if (tjMatch[1] && tjMatch[1].trim()) {
-        lineParts.push(decodePdfString(tjMatch[1]))
+        items.push({
+          text: decodePdfString(tjMatch[1]),
+          y: currentY,
+          x: currentX
+        })
       }
     }
     
-    // Pattern 2: [(texts)]TJ - show text with positioning
+    // Pattern 2: [(texts)]TJ
     const tjArrayPattern = /\[\s*([^\]]+)\s*\]\s*TJ/g
     let tjArrayMatch
     while ((tjArrayMatch = tjArrayPattern.exec(block)) !== null) {
       const arrayContent = tjArrayMatch[1]
       const strings = arrayContent.match(/\(([^)]*)\)/g) || []
+      let xPos = currentX
       for (const s of strings) {
         const text = s.slice(1, -1)
         if (text.trim()) {
-          lineParts.push(decodePdfString(text))
+          items.push({
+            text: decodePdfString(text),
+            y: currentY,
+            x: xPos
+          })
+          xPos += text.length * 5 // Approximate width
         }
       }
     }
-    
-    if (lineParts.length > 0) {
-      lines.push(lineParts.join(' '))
-    }
   }
   
-  // If no BT/ET blocks found, try simple text extraction
-  if (lines.length === 0) {
-    const texts: string[] = []
-    
+  // If no items found with position tracking, try simple extraction
+  if (items.length === 0) {
+    // Fallback: extract without positions
     const tjPattern = /\(([^)]*)\)\s*Tj/g
     let simpleMatch
+    let y = 800
     while ((simpleMatch = tjPattern.exec(streamText)) !== null) {
       if (simpleMatch[1] && simpleMatch[1].trim()) {
-        texts.push(decodePdfString(simpleMatch[1]))
+        items.push({
+          text: decodePdfString(simpleMatch[1]),
+          y: y,
+          x: 0
+        })
+        y -= 12
       }
     }
     
@@ -154,15 +229,18 @@ function extractTextFromStream(streamText: string): string[] {
       for (const s of strings) {
         const text = s.slice(1, -1)
         if (text.trim()) {
-          texts.push(decodePdfString(text))
+          items.push({
+            text: decodePdfString(text),
+            y: y,
+            x: 0
+          })
+          y -= 12
         }
       }
     }
-    
-    return texts
   }
   
-  return lines
+  return items
 }
 
 // Decode PDF string escape sequences
