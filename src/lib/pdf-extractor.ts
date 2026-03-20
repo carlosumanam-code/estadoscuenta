@@ -60,19 +60,23 @@ export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
       }
     }
     
-    // Combine all text
-    let result = textParts.join(' ')
+    // Combine all text - use newlines to preserve line structure
+    // This is important for parsers that expect line-based format (like BAC)
+    let result = textParts.join('\n')
     
-    // Clean up escape sequences
+    // Clean up escape sequences while preserving line structure
     result = result
-      .replace(/\\n/g, ' ')
-      .replace(/\\r/g, ' ')
-      .replace(/\\t/g, ' ')
-      .replace(/\\\(/g, '(')
+      .replace(/\\n/g, ' ')        // Literal \n string -> space
+      .replace(/\\r/g, ' ')        // Literal \r string -> space
+      .replace(/\\t/g, ' ')        // Literal \t string -> space
+      .replace(/\\\(/g, '(')       // Unescape parentheses
       .replace(/\\\)/g, ')')
-      .replace(/\\\\/g, '\\')
+      .replace(/\\\\/g, '\\')      // Unescape backslash
       .replace(/\\(\d{1,3})/g, (_, octal) => String.fromCharCode(parseInt(octal, 8)))
-      .replace(/\s+/g, ' ')
+      .replace(/[ \t]+/g, ' ')     // Collapse multiple spaces/tabs to single space (preserve newlines)
+      .replace(/\n\s+/g, '\n')     // Remove leading spaces on lines
+      .replace(/\s+\n/g, '\n')     // Remove trailing spaces on lines
+      .replace(/\n{3,}/g, '\n\n')  // Collapse multiple blank lines to double
       .trim()
     
     console.log('Extracted text parts:', textParts.length)
@@ -91,45 +95,74 @@ export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
 }
 
 // Extract text operators from a PDF content stream
+// Preserves line structure by detecting BT/ET blocks as separate lines
 function extractTextFromStream(streamText: string): string[] {
-  const texts: string[] = []
+  const lines: string[] = []
   
-  // Pattern 1: (text)Tj - show text
-  const tjPattern = /\(([^)]*)\)\s*Tj/g
-  let match
-  while ((match = tjPattern.exec(streamText)) !== null) {
-    if (match[1] && match[1].trim()) {
-      texts.push(decodePdfString(match[1]))
-    }
-  }
-  
-  // Pattern 2: [(texts)]TJ - show text with positioning
-  const tjArrayPattern = /\[\s*([^\]]+)\s*\]\s*TJ/g
-  while ((match = tjArrayPattern.exec(streamText)) !== null) {
-    const arrayContent = match[1]
-    const strings = arrayContent.match(/\(([^)]*)\)/g) || []
-    for (const s of strings) {
-      const text = s.slice(1, -1)
-      if (text.trim()) {
-        texts.push(decodePdfString(text))
-      }
-    }
-  }
-  
-  // Pattern 3: Simple text in parentheses (BT...ET blocks)
+  // Process BT...ET blocks (text blocks) - each block is typically a line
   const btEtPattern = /BT\s*([\s\S]*?)\s*ET/g
+  let match
+  
   while ((match = btEtPattern.exec(streamText)) !== null) {
     const block = match[1]
-    const strings = block.match(/\(([^)]*)\)/g) || []
-    for (const s of strings) {
-      const text = s.slice(1, -1)
-      if (text.trim()) {
-        texts.push(decodePdfString(text))
+    const lineParts: string[] = []
+    
+    // Pattern 1: (text)Tj - show text
+    const tjPattern = /\(([^)]*)\)\s*Tj/g
+    let tjMatch
+    while ((tjMatch = tjPattern.exec(block)) !== null) {
+      if (tjMatch[1] && tjMatch[1].trim()) {
+        lineParts.push(decodePdfString(tjMatch[1]))
       }
+    }
+    
+    // Pattern 2: [(texts)]TJ - show text with positioning
+    const tjArrayPattern = /\[\s*([^\]]+)\s*\]\s*TJ/g
+    let tjArrayMatch
+    while ((tjArrayMatch = tjArrayPattern.exec(block)) !== null) {
+      const arrayContent = tjArrayMatch[1]
+      const strings = arrayContent.match(/\(([^)]*)\)/g) || []
+      for (const s of strings) {
+        const text = s.slice(1, -1)
+        if (text.trim()) {
+          lineParts.push(decodePdfString(text))
+        }
+      }
+    }
+    
+    if (lineParts.length > 0) {
+      lines.push(lineParts.join(' '))
     }
   }
   
-  return texts
+  // If no BT/ET blocks found, try simple text extraction
+  if (lines.length === 0) {
+    const texts: string[] = []
+    
+    const tjPattern = /\(([^)]*)\)\s*Tj/g
+    let simpleMatch
+    while ((simpleMatch = tjPattern.exec(streamText)) !== null) {
+      if (simpleMatch[1] && simpleMatch[1].trim()) {
+        texts.push(decodePdfString(simpleMatch[1]))
+      }
+    }
+    
+    const tjArrayPattern = /\[\s*([^\]]+)\s*\]\s*TJ/g
+    while ((simpleMatch = tjArrayPattern.exec(streamText)) !== null) {
+      const arrayContent = simpleMatch[1]
+      const strings = arrayContent.match(/\(([^)]*)\)/g) || []
+      for (const s of strings) {
+        const text = s.slice(1, -1)
+        if (text.trim()) {
+          texts.push(decodePdfString(text))
+        }
+      }
+    }
+    
+    return texts
+  }
+  
+  return lines
 }
 
 // Decode PDF string escape sequences
