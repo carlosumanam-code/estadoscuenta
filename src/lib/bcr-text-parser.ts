@@ -37,12 +37,11 @@ function parseDate(dateStr: string): Date | null {
 
 // Keywords that indicate CREDIT transactions (ingresos)
 const CREDIT_KEYWORDS = [
-  'SINPE MOVIL',
-  'SINPE MOVIL OTRA ENT',
-  'MONEDERO SINPE',
-  'PIN ENTRANTE SINPE',
-  'DTR TIEMPOREAL SINPE',
-  'TRANSFERENC BANCOBCR',
+  'SINPE',
+  'TRANSFERENC',
+  'MONEDERO',
+  'PIN ENTRANTE',
+  'DTR TIEMPOREAL',
   'NC DEPOSITO',
   'CREDITO POR DEP',
   'DEPOSITOS -',
@@ -56,36 +55,31 @@ const DEBIT_KEYWORDS = [
   'ND AH',
   'PG AH',
   'PAG SERV PUB',
-  'TASACION BANCOBCR',
+  'TASACION',
   'DEBITO COMPENSADO',
+  'COSEVI',
 ]
 
-// Determine if a transaction is a credit based on description
-function isCreditTransaction(description: string): boolean {
+// Determine transaction type based on description
+function getTransactionType(description: string): 'credit' | 'debit' {
   const upper = description.toUpperCase()
   
-  // Check for credit keywords
+  // Check for credit keywords first
   for (const keyword of CREDIT_KEYWORDS) {
     if (upper.includes(keyword)) {
-      return true
+      return 'credit'
     }
   }
-  
-  return false
-}
-
-// Determine if a transaction is a debit based on description
-function isDebitTransaction(description: string): boolean {
-  const upper = description.toUpperCase()
   
   // Check for debit keywords
   for (const keyword of DEBIT_KEYWORDS) {
     if (upper.includes(keyword)) {
-      return true
+      return 'debit'
     }
   }
   
-  return false
+  // Default to debit
+  return 'debit'
 }
 
 // Main BCR parser
@@ -96,39 +90,35 @@ export function parseBCRText(text: string): BCRParseResult {
   console.log('=== BCR Parser ===')
   console.log('Text length:', text.length)
   
-  // Pattern to match transaction lines
-  // Format: DD/MM/YY DD/MM/YY XXXXXX DOC_NUM DESCRIPTION AMOUNT
-  // Example: 31/08/24 02/09/24 80998792 PIN ENTRANTE SINPE - HUMBERTO 1,155,000.00
+  // Pattern 1: Format with tarjeta + documento (COMPRAS EN COMERCIOS)
+  // DD/MM/YY DD/MM/YY TARJETA DOCUMENTO DESCRIPCION MONTO
+  // Example: 29/08/24 02/09/24 1494 271671 COMPRAS EN COMERCIOS - ... 7,357.35
+  const pattern1 = /(\d{2}\/\d{2}\/\d{2})\s+(\d{2}\/\d{2}\/\d{2})\s+(\d+)\s+(\d+)\s+(.+?)\s+(\d{1,3}(?:,\d{3})*\.\d{2})/g
   
-  const transactionPattern = /(\d{2}\/\d{2}\/\d{2})\s+(\d{2}\/\d{2}\/\d{2})\s+(\d+)\s+(\d+)\s+(.+?)\s+(\d{1,3}(?:,\d{3})*\.\d{2})/g
+  // Pattern 2: Format with single documento (SINPE, TRANSFERENCIAS)
+  // DD/MM/YY DD/MM/YY DOCUMENTO DESCRIPCION MONTO
+  // Example: 31/08/24 02/09/24 80998792 PIN ENTRANTE SINPE - ... 1,155,000.00
+  const pattern2 = /(\d{2}\/\d{2}\/\d{2})\s+(\d{2}\/\d{2}\/\d{2})\s+(\d{7,})\s+(.+?)\s+(\d{1,3}(?:,\d{3})*\.\d{2})/g
   
+  const processedLines = new Set<string>()
   let match
-  let transactionCount = 0
   
-  while ((match = transactionPattern.exec(text)) !== null) {
-    transactionCount++
-    
+  // Process pattern 1 (with tarjeta + documento)
+  while ((match = pattern1.exec(text)) !== null) {
     const dateStr = match[1]
     const description = match[5].trim()
     const amountStr = match[6]
+    const lineKey = `${dateStr}|${amountStr}|${description.substring(0, 30)}`
+    
+    if (processedLines.has(lineKey)) continue
+    processedLines.add(lineKey)
     
     const date = parseDate(dateStr)
     const amount = parseAmount(amountStr)
     
     if (!date || amount <= 0) continue
     
-    // Determine transaction type
-    let type: 'credit' | 'debit' | null = null
-    
-    if (isCreditTransaction(description)) {
-      type = 'credit'
-    } else if (isDebitTransaction(description)) {
-      type = 'debit'
-    } else {
-      // Unknown - default to debit but log it
-      console.log('Unknown transaction type:', description.substring(0, 50))
-      type = 'debit'
-    }
+    const type = getTransactionType(description)
     
     const transaction: BCRTransaction = {
       date,
@@ -140,14 +130,47 @@ export function parseBCRText(text: string): BCRParseResult {
     
     if (type === 'credit') {
       credits.push(transaction)
+      console.log(`[CREDIT] ${dateStr} | ${amount} | ${description.substring(0, 40)}`)
     } else {
       debits.push(transaction)
     }
   }
   
-  console.log('Transactions found:', transactionCount)
-  console.log('Credits:', credits.length)
-  console.log('Debits:', debits.length)
+  // Process pattern 2 (single documento - 7+ digits)
+  while ((match = pattern2.exec(text)) !== null) {
+    const dateStr = match[1]
+    const description = match[4].trim()
+    const amountStr = match[5]
+    const lineKey = `${dateStr}|${amountStr}|${description.substring(0, 30)}`
+    
+    if (processedLines.has(lineKey)) continue
+    processedLines.add(lineKey)
+    
+    const date = parseDate(dateStr)
+    const amount = parseAmount(amountStr)
+    
+    if (!date || amount <= 0) continue
+    
+    const type = getTransactionType(description)
+    
+    const transaction: BCRTransaction = {
+      date,
+      amount,
+      description: description.substring(0, 200),
+      type,
+      rawLine: match[0]
+    }
+    
+    if (type === 'credit') {
+      credits.push(transaction)
+      console.log(`[CREDIT] ${dateStr} | ${amount} | ${description.substring(0, 40)}`)
+    } else {
+      debits.push(transaction)
+    }
+  }
+  
+  console.log('Credits found:', credits.length)
+  console.log('Debits found:', debits.length)
   
   // Sort by date
   credits.sort((a, b) => a.date.getTime() - b.date.getTime())

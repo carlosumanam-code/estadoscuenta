@@ -54,15 +54,15 @@ export async function POST(request: NextRequest) {
       debits: result.debits.length,
       totalCredits: result.totalCredits,
       totalDebits: result.totalDebits,
-      creditTransactions: result.credits.slice(0, 10).map(t => ({
+      creditTransactions: result.credits.slice(0, 20).map(t => ({
         date: t.date.toISOString().split('T')[0],
         amount: t.amount,
-        description: t.description.substring(0, 60)
+        description: t.description.substring(0, 80)
       })),
       debitTransactions: result.debits.slice(0, 10).map(t => ({
         date: t.date.toISOString().split('T')[0],
         amount: t.amount,
-        description: t.description.substring(0, 60)
+        description: t.description.substring(0, 80)
       }))
     })
     
