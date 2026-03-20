@@ -70,9 +70,33 @@ export async function POST(request: NextRequest) {
 
     console.log('Bank found:', bank.name)
 
-    // Process PDF
-    const bytes = await file.arrayBuffer()
-    const buffer = Buffer.from(bytes)
+    // Process PDF - handle different File API implementations
+    let buffer: Buffer
+    const anyFile = file as any
+    
+    if (typeof anyFile.arrayBuffer === 'function') {
+      // Standard File API
+      console.log('Using arrayBuffer()')
+      const bytes = await anyFile.arrayBuffer()
+      buffer = Buffer.from(bytes)
+    } else if (typeof anyFile.stream === 'function') {
+      // Use stream API (Netlify compatibility)
+      console.log('Using stream()')
+      const chunks: Uint8Array[] = []
+      const reader = anyFile.stream().getReader()
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        chunks.push(value)
+      }
+      buffer = Buffer.concat(chunks)
+    } else if (Buffer.isBuffer(file)) {
+      console.log('File is already a Buffer')
+      buffer = file
+    } else {
+      console.log('File object properties:', Object.keys(anyFile))
+      throw new Error('Cannot process file - no compatible method found')
+    }
 
     console.log('Buffer created, size:', buffer.length)
 

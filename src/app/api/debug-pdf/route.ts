@@ -6,25 +6,65 @@ export const maxDuration = 60
 
 export async function POST(request: NextRequest) {
   try {
-    const formData = await request.formData()
-    const file = formData.get('file') as File
-    
-    if (!file) {
-      return NextResponse.json({ error: 'No file provided' }, { status: 400 })
-    }
-
     console.log('=== DEBUG PDF EXTRACTION ===')
-    console.log('File name:', file.name)
-    console.log('File type:', file.type)
-    console.log('File size:', file.size)
-
-    const bytes = await file.arrayBuffer()
-    const buffer = Buffer.from(bytes)
+    
+    const contentType = request.headers.get('content-type') || ''
+    console.log('Content-Type:', contentType)
+    
+    let buffer: Buffer
+    
+    if (contentType.includes('multipart/form-data')) {
+      const formData = await request.formData()
+      const file = formData.get('file')
+      
+      if (!file) {
+        return NextResponse.json({ error: 'No file provided' }, { status: 400 })
+      }
+      
+      console.log('File type:', typeof file)
+      console.log('File constructor:', (file as any)?.constructor?.name)
+      
+      // Try different methods to get buffer
+      const anyFile = file as any
+      
+      if (typeof anyFile.arrayBuffer === 'function') {
+        // Standard File API
+        console.log('Using arrayBuffer()')
+        const bytes = await anyFile.arrayBuffer()
+        buffer = Buffer.from(bytes)
+      } else if (typeof anyFile.stream === 'function') {
+        // Use stream API
+        console.log('Using stream()')
+        const chunks: Uint8Array[] = []
+        const reader = anyFile.stream().getReader()
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          chunks.push(value)
+        }
+        buffer = Buffer.concat(chunks)
+      } else if (Buffer.isBuffer(file)) {
+        console.log('File is already a Buffer')
+        buffer = file
+      } else if (anyFile.buffer) {
+        console.log('Using .buffer property')
+        buffer = Buffer.from(anyFile.buffer)
+      } else {
+        // Last resort: try to get it as text and convert
+        console.log('Trying toString()')
+        const text = await anyFile.text()
+        buffer = Buffer.from(text, 'binary')
+      }
+    } else {
+      // Raw binary
+      const bytes = await request.arrayBuffer()
+      buffer = Buffer.from(bytes)
+    }
     
     console.log('Buffer size:', buffer.length)
     console.log('First 20 bytes (hex):', buffer.slice(0, 20).toString('hex'))
     
-    // Check if it's actually a PDF (should start with %PDF)
+    // Check PDF header
     const header = buffer.slice(0, 4).toString()
     console.log('File header:', header)
     
@@ -36,7 +76,7 @@ export async function POST(request: NextRequest) {
       }, { status: 400 })
     }
 
-    // Try extraction with minimal options
+    // Extract text
     console.log('Attempting pdf-parse...')
     
     let data
@@ -45,23 +85,16 @@ export async function POST(request: NextRequest) {
       console.log('pdf-parse success')
     } catch (parseError: any) {
       console.error('pdf-parse error:', parseError.message)
-      console.error('pdf-parse stack:', parseError.stack)
       return NextResponse.json({ 
         error: 'pdf-parse failed: ' + parseError.message,
-        stack: parseError.stack,
-        bufferSize: buffer.length,
-        header: header
+        bufferSize: buffer.length
       }, { status: 500 })
     }
     
     console.log('Pages:', data.numpages)
-    console.log('Info:', data.info)
     console.log('Text length:', data.text?.length || 0)
     
-    // Show first 3000 characters of text
     const textPreview = data.text?.substring(0, 3000) || ''
-    
-    // Find transaction lines
     const lines = data.text?.split('\n') || []
     const transactionLines = lines.filter(line => 
       /^\s*\d{2}\/\d{2}\/\d{2}/.test(line) ||
