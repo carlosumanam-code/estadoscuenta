@@ -60,19 +60,22 @@ export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
       }
     }
     
-    // Combine all text
-    let result = textParts.join(' ')
+    // Combine all text - use newlines to preserve line structure for parsers
+    let result = textParts.join('\n')
     
-    // Clean up escape sequences
+    // Clean up escape sequences while preserving line structure
     result = result
-      .replace(/\\n/g, ' ')
-      .replace(/\\r/g, ' ')
-      .replace(/\\t/g, ' ')
-      .replace(/\\\(/g, '(')
+      .replace(/\\n/g, ' ')        // Literal \n string -> space
+      .replace(/\\r/g, ' ')        // Literal \r string -> space
+      .replace(/\\t/g, ' ')        // Literal \t string -> space
+      .replace(/\\\(/g, '(')       // Unescape parentheses
       .replace(/\\\)/g, ')')
-      .replace(/\\\\/g, '\\')
+      .replace(/\\\\/g, '\\')      // Unescape backslash
       .replace(/\\(\d{1,3})/g, (_, octal) => String.fromCharCode(parseInt(octal, 8)))
-      .replace(/\s+/g, ' ')
+      .replace(/[ \t]+/g, ' ')     // Collapse multiple spaces/tabs to single space (preserve newlines)
+      .replace(/\n\s+/g, '\n')     // Remove leading spaces on lines
+      .replace(/\s+\n/g, '\n')     // Remove trailing spaces on lines
+      .replace(/\n{3,}/g, '\n\n')  // Collapse multiple blank lines
       .trim()
     
     console.log('Extracted text parts:', textParts.length)
@@ -91,36 +94,118 @@ export async function extractTextFromPDF(buffer: Buffer): Promise<string> {
 }
 
 // Extract text operators from a PDF content stream
+// Groups text by Y position to reconstruct lines
 function extractTextFromStream(streamText: string): string[] {
+  // First, extract all text items with their Y positions
+  const textItems: { text: string; y: number }[] = []
+  
+  // Current transformation matrix values
+  let currentY = 0
+  
+  // Process BT...ET blocks to get text with position info
+  const btEtPattern = /BT\s*([\s\S]*?)\s*ET/g
+  let match
+  
+  while ((match = btEtPattern.exec(streamText)) !== null) {
+    const block = match[1]
+    
+    // Look for Tm operator which sets the text matrix: a b c d e f Tm
+    // The 'e' value (5th) is X position, 'f' (6th) is Y position
+    const tmMatch = block.match(/([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+Tm/)
+    if (tmMatch) {
+      currentY = parseFloat(tmMatch[6])
+    }
+    
+    // Look for Td operator which moves text position: x y Td
+    const tdMatch = block.match(/([\d.-]+)\s+([\d.-]+)\s+Td/)
+    if (tdMatch) {
+      currentY += parseFloat(tdMatch[2])
+    }
+    
+    // Extract text from this block
+    const textParts: string[] = []
+    
+    // Pattern 1: (text)Tj
+    const tjPattern = /\(([^)]*)\)\s*Tj/g
+    let tjMatch
+    while ((tjMatch = tjPattern.exec(block)) !== null) {
+      if (tjMatch[1] && tjMatch[1].trim()) {
+        textParts.push(decodePdfString(tjMatch[1]))
+      }
+    }
+    
+    // Pattern 2: [(texts)]TJ
+    const tjArrayPattern = /\[\s*([^\]]+)\s*\]\s*TJ/g
+    let tjArrayMatch
+    while ((tjArrayMatch = tjArrayPattern.exec(block)) !== null) {
+      const arrayContent = tjArrayMatch[1]
+      const strings = arrayContent.match(/\(([^)]*)\)/g) || []
+      for (const s of strings) {
+        const text = s.slice(1, -1)
+        if (text.trim()) {
+          textParts.push(decodePdfString(text))
+        }
+      }
+    }
+    
+    if (textParts.length > 0) {
+      textItems.push({
+        text: textParts.join(' '),
+        y: currentY
+      })
+    }
+  }
+  
+  // If we got Y positions, group by Y (within tolerance) to form lines
+  if (textItems.length > 0 && textItems.some(item => item.y !== 0)) {
+    const yTolerance = 2
+    const yGroups = new Map<number, string[]>()
+    
+    for (const item of textItems) {
+      // Find existing group with similar Y
+      let foundY: number | null = null
+      for (const existingY of yGroups.keys()) {
+        if (Math.abs(existingY - item.y) <= yTolerance) {
+          foundY = existingY
+          break
+        }
+      }
+      
+      if (foundY !== null) {
+        yGroups.get(foundY)!.push(item.text)
+      } else {
+        yGroups.set(item.y, [item.text])
+      }
+    }
+    
+    // Sort by Y (descending - PDF Y increases upward) and return lines
+    const sortedYs = Array.from(yGroups.keys()).sort((a, b) => b - a)
+    const lines: string[] = []
+    
+    for (const y of sortedYs) {
+      const lineText = yGroups.get(y)!.join(' ')
+      if (lineText.trim()) {
+        lines.push(lineText.trim())
+      }
+    }
+    
+    return lines
+  }
+  
+  // Fallback: just return all text parts without Y grouping
   const texts: string[] = []
   
-  // Pattern 1: (text)Tj - show text
   const tjPattern = /\(([^)]*)\)\s*Tj/g
-  let match
   while ((match = tjPattern.exec(streamText)) !== null) {
     if (match[1] && match[1].trim()) {
       texts.push(decodePdfString(match[1]))
     }
   }
   
-  // Pattern 2: [(texts)]TJ - show text with positioning
   const tjArrayPattern = /\[\s*([^\]]+)\s*\]\s*TJ/g
   while ((match = tjArrayPattern.exec(streamText)) !== null) {
     const arrayContent = match[1]
     const strings = arrayContent.match(/\(([^)]*)\)/g) || []
-    for (const s of strings) {
-      const text = s.slice(1, -1)
-      if (text.trim()) {
-        texts.push(decodePdfString(text))
-      }
-    }
-  }
-  
-  // Pattern 3: Simple text in parentheses (BT...ET blocks)
-  const btEtPattern = /BT\s*([\s\S]*?)\s*ET/g
-  while ((match = btEtPattern.exec(streamText)) !== null) {
-    const block = match[1]
-    const strings = block.match(/\(([^)]*)\)/g) || []
     for (const s of strings) {
       const text = s.slice(1, -1)
       if (text.trim()) {
